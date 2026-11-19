@@ -2,13 +2,13 @@
 set -euo pipefail
 
 # ==============================================================================
-# Интерактивный установщик Xray (VLESS + TLS + XTLS-Vision) с Fallback-сайтом,
-# автопродлением SSL (Let's Encrypt), TCP BBR и UFW.
-# Поддерживаемые ОС: Ubuntu 22.04/24.04+, Debian 11/12+
+# Interactive installer for Xray-core (VLESS + TLS + XTLS-Vision) with an
+# HTTPS fallback site, Let's Encrypt auto-renewal, TCP BBR, UFW, and vlessLink.
+# Supported OS: Ubuntu 22.04/24.04+, Debian 11/12+
 # ==============================================================================
 
-# При необходимости зафиксировать конкретную версию Xray-core, укажите её ниже
-# (например, "v26.10.31"). Пустое значение = всегда последняя версия.
+# Optional: pin a specific Xray-core version (e.g., "v26.10.31").
+# Leave empty to always install the latest release.
 XRAY_VERSION=""
 
 GREEN='\033[0;32m'
@@ -26,25 +26,25 @@ on_error() {
     local line="$1"
     local cmd="$2"
     echo ""
-    echo -e "${RED}[FATAL]${NC} Сбой на строке ${line} при выполнении команды: ${cmd}"
-    echo -e "${YELLOW}Проверьте вывод выше. Если сбой произошёл на этапе certbot, убедитесь, что DNS-запись домена указывает на IP этого сервера и порт 80 свободен.${NC}"
+    echo -e "${RED}[FATAL]${NC} Failed on line ${line} while running: ${cmd}"
+    echo -e "${YELLOW}Check the output above. If certbot failed, verify your domain's A record points to this server and port 80 is reachable.${NC}"
     exit 1
 }
 trap 'on_error "$LINENO" "$BASH_COMMAND"' ERR
 
-# --- Проверка прав и ОС ---
-[[ $EUID -eq 0 ]] || error "Запустите скрипт от имени root (sudo bash $0)."
-command -v apt-get >/dev/null 2>&1 || error "Поддерживаются только Debian и Ubuntu (apt-get)."
+# --- Root & OS check ---
+[[ $EUID -eq 0 ]] || error "Please run this script as root (sudo bash $0)."
+command -v apt-get >/dev/null 2>&1 || error "Only Debian and Ubuntu (apt-get) are supported."
 
 clear || true
 echo -e "${GREEN}============================================================${NC}"
-echo -e "${GREEN}   Установка VLESS (TLS + XTLS-Vision) + Fallback + BBR     ${NC}"
+echo -e "${GREEN}   Xray VLESS (TLS + XTLS-Vision) + Fallback + BBR Setup    ${NC}"
 echo -e "${GREEN}============================================================${NC}"
 echo ""
 
-# --- Шаг 1. Интерактивный ввод данных ---
+# --- Step 1. Interactive input ---
 while true; do
-    read -rp "1. Введите ваш домен (например, vpn.example.com): " DOMAIN
+    read -rp "1. Enter your domain name (e.g. vpn.example.com): " DOMAIN
     DOMAIN="${DOMAIN,,}"
     DOMAIN="${DOMAIN#https://}"
     DOMAIN="${DOMAIN#http://}"
@@ -52,67 +52,67 @@ while true; do
     if [[ -n "$DOMAIN" && "$DOMAIN" == *.* && "$DOMAIN" != *" "* ]]; then
         break
     fi
-    warn "Некорректный домен. Попробуйте снова."
+    warn "Invalid domain name. Please try again."
 done
 
-read -rp "2. Email для уведомлений Let's Encrypt (Enter — пропустить): " CERT_EMAIL
+read -rp "2. Email for Let's Encrypt notifications (press Enter to skip): " CERT_EMAIL
 
 while true; do
-    read -rp "3. Введите UUID (Enter — сгенерировать новый автоматически): " USER_UUID
+    read -rp "3. Enter client UUID (press Enter to auto-generate): " USER_UUID
     if [[ -z "$USER_UUID" ]]; then
         USER_UUID=$(cat /proc/sys/kernel/random/uuid)
-        info "Сгенерирован новый UUID: $USER_UUID"
+        info "Generated new UUID: $USER_UUID"
         break
     elif [[ "$USER_UUID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
         break
     else
-        warn "Некорректный формат UUID (ожидается xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)."
+        warn "Invalid UUID format (expected xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)."
     fi
 done
 
-read -rp "4. Название профиля в VPN-клиенте [по умолчанию: $DOMAIN]: " PROFILE_NAME
+read -rp "4. Profile name for VPN client [default: $DOMAIN]: " PROFILE_NAME
 PROFILE_NAME="${PROFILE_NAME:-$DOMAIN}"
 
-read -rp "5. Порт SSH на этом сервере [по умолчанию: 22]: " SSH_PORT
+read -rp "5. SSH port on this server [default: 22]: " SSH_PORT
 SSH_PORT="${SSH_PORT:-22}"
 if ! [[ "$SSH_PORT" =~ ^[0-9]+$ ]] || (( SSH_PORT < 1 || SSH_PORT > 65535 )); then
-    error "Некорректный порт SSH: $SSH_PORT"
+    error "Invalid SSH port: $SSH_PORT"
 fi
 
 echo ""
-echo "6. Сайт-заглушка (откроется при заходе на https://$DOMAIN в браузере):"
-echo "   1) Встроенная лёгкая HTML-страница (надёжно, не зависит от сторонних репо)"
-echo "   2) Скачать статический сайт из публичного Git-репозитория (HTML/JS/CSS)"
-read -rp "Выберите вариант [1/2, по умолчанию 1]: " SITE_CHOICE
+echo "6. Fallback website (served when visiting https://$DOMAIN in a browser):"
+echo "   1) Built-in lightweight HTML page (reliable, no external dependencies)"
+echo "   2) Clone a static site from a public Git repository (HTML/JS/CSS)"
+read -rp "Choose an option [1/2, default: 1]: " SITE_CHOICE
 SITE_CHOICE="${SITE_CHOICE:-1}"
 
 GIT_REPO_URL=""
 if [[ "$SITE_CHOICE" == "2" ]]; then
-    read -rp "   Введите HTTPS-ссылку на репозиторий (например, https://github.com/user/site.git): " GIT_REPO_URL
-    [[ -n "$GIT_REPO_URL" ]] || error "URL репозитория не может быть пустым."
+    read -rp "   Enter HTTPS Git repository URL (e.g. https://github.com/user/site.git): " GIT_REPO_URL
+    [[ -n "$GIT_REPO_URL" ]] || error "Repository URL cannot be empty."
 fi
 
 echo ""
-read -rp "Начать установку с указанными параметрами? [Y/n]: " CONFIRM
+read -rp "Proceed with installation? [Y/n]: " CONFIRM
 CONFIRM="${CONFIRM:-Y}"
-[[ "$CONFIRM" =~ ^[Yy]$ ]] || { echo "Установка отменена."; exit 0; }
+[[ "$CONFIRM" =~ ^[Yy]$ ]] || { echo "Installation cancelled."; exit 0; }
 
-# --- Шаг 2. Установка зависимостей ---
-info "Обновление списков пакетов и установка зависимостей..."
+# --- Step 2. Install dependencies ---
+info "Updating package lists and installing dependencies..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y curl openssl unzip python3 qrencode ufw git certbot
 
-# --- Шаг 3. Жёсткая проверка портов и DNS ---
-info "Проверка портов 80 и 443..."
+# --- Step 3. Strict port & DNS checks ---
+info "Checking if ports 80 and 443 are free..."
 if ss -tlnp | grep -qE ':(80|443)\s'; then
-    echo -e "${RED}Порты 80 или 443 уже заняты другим сервисом:${NC}"
+    echo -e "${RED}Ports 80 or 443 are already in use by another process:${NC}"
     ss -tlnp | grep -E ':(80|443)\s' || true
-    error "Остановите мешающий веб-сервер/прокси (например, nginx, apache2 или старый xray) и запустите скрипт снова."
+    error "Stop the conflicting service (e.g. nginx, apache2, caddy) and run this script again."
 fi
-ok "Порты 80 и 443 свободны."
+ok "Ports 80 and 443 are free."
 
-info "Проверка DNS-записи домена $DOMAIN..."
+info "Checking DNS A record for $DOMAIN..."
 SERVER_IP=$(
     curl -4 -s --max-time 8 https://api.ipify.org \
     || curl -4 -s --max-time 8 https://ifconfig.me \
@@ -123,31 +123,31 @@ SERVER_IP="${SERVER_IP//$'\n'/}"
 DOMAIN_IP=$(getent ahostsv4 "$DOMAIN" 2>/dev/null | awk '{print $1}' | head -n1 || true)
 
 if [[ -z "$SERVER_IP" ]]; then
-    warn "Не удалось определить внешний IPv4 этого сервера через публичные сервисы. Пропускаем автосверку DNS."
+    warn "Could not detect this server's public IPv4 address. Skipping automatic DNS match."
 elif [[ -z "$DOMAIN_IP" ]]; then
-    warn "Не удалось определить A-запись домена $DOMAIN."
-    read -rp "Продолжить всё равно? Certbot может не выдать сертификат [y/N]: " DNS_CONT
+    warn "Could not resolve an IPv4 A record for $DOMAIN."
+    read -rp "Continue anyway? Certbot may fail to issue a certificate [y/N]: " DNS_CONT
     [[ "$DNS_CONT" =~ ^[Yy]$ ]] || exit 1
 elif [[ "$DOMAIN_IP" != "$SERVER_IP" ]]; then
-    warn "A-запись домена ($DOMAIN_IP) не совпадает с IP этого сервера ($SERVER_IP)!"
-    warn "Убедитесь, что DNS прописан верно и отключён прокси Cloudflare (оранжевое облако)."
-    read -rp "Продолжить всё равно? [y/N]: " DNS_CONT
+    warn "Domain A record ($DOMAIN_IP) does not match this server's IP ($SERVER_IP)!"
+    warn "Make sure DNS is configured and Cloudflare proxy (orange cloud) is disabled."
+    read -rp "Continue anyway? [y/N]: " DNS_CONT
     [[ "$DNS_CONT" =~ ^[Yy]$ ]] || exit 1
 else
-    ok "DNS настроен верно: $DOMAIN -> $DOMAIN_IP"
+    ok "DNS looks good: $DOMAIN -> $DOMAIN_IP"
 fi
 
-# --- Шаг 4. Включение TCP BBR ---
-info "Включение TCP BBR + fq..."
+# --- Step 4. Enable TCP BBR ---
+info "Enabling TCP BBR + fq..."
 cat > /etc/sysctl.d/99-bbr.conf << 'EOF'
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 EOF
 sysctl --system >/dev/null
-ok "Алгоритм управления перегрузкой: $(sysctl -n net.ipv4.tcp_congestion_control)"
+ok "TCP congestion control: $(sysctl -n net.ipv4.tcp_congestion_control)"
 
-# --- Шаг 5. Настройка файрвола UFW ---
-info "Настройка UFW (порты $SSH_PORT, 80, 443)..."
+# --- Step 5. Configure UFW firewall ---
+info "Configuring UFW (allowing ports $SSH_PORT, 80, 443)..."
 ufw allow "${SSH_PORT}/tcp" >/dev/null
 ufw allow 80/tcp >/dev/null
 ufw allow 443/tcp >/dev/null
@@ -155,10 +155,10 @@ ufw default deny incoming >/dev/null
 ufw default allow outgoing >/dev/null
 ufw --force enable >/dev/null
 systemctl enable ufw >/dev/null 2>&1 || true
-ok "UFW включён и настроен."
+ok "UFW enabled and configured."
 
-# --- Шаг 6. Получение SSL-сертификата Let's Encrypt ---
-info "Получение SSL-сертификата для $DOMAIN..."
+# --- Step 6. Obtain Let's Encrypt SSL certificate ---
+info "Obtaining SSL certificate for $DOMAIN..."
 CERTBOT_ARGS=(certonly --standalone -d "$DOMAIN" --non-interactive --agree-tos)
 if [[ -n "$CERT_EMAIL" ]]; then
     CERTBOT_ARGS+=(-m "$CERT_EMAIL")
@@ -166,24 +166,24 @@ else
     CERTBOT_ARGS+=(--register-unsafely-without-email)
 fi
 certbot "${CERTBOT_ARGS[@]}"
-ok "Сертификат успешно получен."
+ok "SSL certificate issued successfully."
 
-# --- Шаг 7. Установка Xray-core ---
-info "Установка Xray-core..."
+# --- Step 7. Install Xray-core ---
+info "Installing Xray-core..."
 XRAY_INSTALL_ARGS=(install)
 if [[ -n "$XRAY_VERSION" ]]; then
     XRAY_INSTALL_ARGS+=(--version "$XRAY_VERSION")
 fi
 bash -c "$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ "${XRAY_INSTALL_ARGS[@]}"
 
-# Определяем системного пользователя Xray (с 18.10.2026 это xray, ранее — nobody)
+# Detect Xray service user (dedicated 'xray' since 2026-10-18, 'nobody' on older releases)
 if id -u xray >/dev/null 2>&1; then
     XRAY_USER="xray"
 else
     XRAY_USER="nobody"
 fi
 XRAY_GROUP="$(id -gn "$XRAY_USER")"
-info "Сервис Xray использует пользователя: ${XRAY_USER}:${XRAY_GROUP}"
+info "Xray service user: ${XRAY_USER}:${XRAY_GROUP}"
 
 mkdir -p /usr/local/etc/xray/certs /var/log/xray
 chown root:"$XRAY_GROUP" /usr/local/etc/xray /usr/local/etc/xray/certs
@@ -191,15 +191,14 @@ chmod 0750 /usr/local/etc/xray /usr/local/etc/xray/certs
 chown -R "${XRAY_USER}:${XRAY_GROUP}" /var/log/xray
 chmod 0700 /var/log/xray
 
-# --- Шаг 8. Хук автообновления SSL для Xray ---
-info "Настройка автоматического обновления сертификатов для Xray..."
+# --- Step 8. SSL auto-renewal deploy hook ---
+info "Configuring Certbot deploy hook for Xray..."
 mkdir -p /etc/letsencrypt/renewal-hooks/deploy
 cat > /etc/letsencrypt/renewal-hooks/deploy/xray-certs.sh << EOF
 #!/usr/bin/env bash
 set -e
 DOMAIN="${DOMAIN}"
 CERT_DIR="/usr/local/etc/xray/certs"
-XRAY_USER="${XRAY_USER}"
 XRAY_GROUP="${XRAY_GROUP}"
 
 mkdir -p "\$CERT_DIR"
@@ -213,12 +212,12 @@ systemctl restart xray || true
 EOF
 chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/xray-certs.sh
 
-# Первый запуск хука для копирования сертификатов
+# Run hook immediately to copy initial certificates
 /etc/letsencrypt/renewal-hooks/deploy/xray-certs.sh
 systemctl enable --now certbot.timer >/dev/null 2>&1 || true
 
-# --- Шаг 9. Конфигурация Xray ---
-info "Создание конфигурации /usr/local/etc/xray/config.json..."
+# --- Step 9. Configure Xray ---
+info "Writing /usr/local/etc/xray/config.json..."
 cat > /usr/local/etc/xray/config.json << EOF
 {
   "log": {
@@ -276,17 +275,18 @@ cat > /usr/local/etc/xray/config.json << EOF
 }
 EOF
 
-chown root:"$XRAY_GROUP" /usr/local/etc/xray/config.json
-chmod 0640 /usr/local/etc/xray/config.json
+printf '%s\n' "$PROFILE_NAME" > /usr/local/etc/xray/.profile_name
+chown root:"$XRAY_GROUP" /usr/local/etc/xray/config.json /usr/local/etc/xray/.profile_name
+chmod 0640 /usr/local/etc/xray/config.json /usr/local/etc/xray/.profile_name
 
-# Проверяем конфиг И права доступа к сертификатам именно от имени пользователя Xray
+# Validate config and certificate permissions as the actual Xray service user
 runuser -u "$XRAY_USER" -- /usr/local/bin/xray -test -config /usr/local/etc/xray/config.json
 systemctl enable xray
 systemctl restart xray
-ok "Xray успешно запущен."
+ok "Xray started successfully."
 
-# --- Шаг 10. Изолированный fallback-сайт на 127.0.0.1:8080 ---
-info "Настройка сайта-заглушки на 127.0.0.1:8080..."
+# --- Step 10. Isolated fallback website on 127.0.0.1:8080 ---
+info "Setting up fallback static site on 127.0.0.1:8080..."
 SITE_ROOT="/var/www/fallback-site"
 WEB_DIR="$SITE_ROOT"
 rm -rf "$SITE_ROOT"
@@ -305,12 +305,12 @@ if [[ "$SITE_CHOICE" == "2" ]]; then
             if [[ -n "$FOUND_INDEX" ]]; then
                 WEB_DIR=$(dirname "$FOUND_INDEX")
             else
-                warn "index.html не найден в репозитории — используем встроенную заглушку."
+                warn "index.html not found in repository — falling back to built-in page."
                 SITE_CHOICE="1"
             fi
         fi
     else
-        warn "Не удалось клонировать репозиторий — используем встроенную заглушку."
+        warn "Failed to clone repository — falling back to built-in page."
         SITE_CHOICE="1"
     fi
 fi
@@ -375,25 +375,77 @@ EOF
 systemctl daemon-reload
 systemctl enable fallback-site
 systemctl restart fallback-site
-ok "Fallback-сайт запущен на 127.0.0.1:8080 (из папки $WEB_DIR)."
+ok "Fallback site is running on 127.0.0.1:8080 (serving $WEB_DIR)."
 
-# --- Шаг 11. Формирование клиентской ссылки и QR-кода ---
-ENCODED_TAG=$(python3 -c 'import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))' "$PROFILE_NAME")
-VLESS_URI="vless://${USER_UUID}@${DOMAIN}:443?type=tcp&encryption=none&flow=xtls-rprx-vision&security=tls&sni=${DOMAIN}&alpn=http%2F1.1&fp=chrome#${ENCODED_TAG}"
+# --- Step 11. Install 'vlessLink' helper command ---
+info "Installing 'vlessLink' command..."
+cat > /usr/local/bin/vlessLink << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
 
+CONFIG="/usr/local/etc/xray/config.json"
+CERT="/usr/local/etc/xray/certs/fullchain.pem"
+PROFILE_FILE="/usr/local/etc/xray/.profile_name"
+
+if [[ ! -r "$CONFIG" || ! -r "$CERT" ]]; then
+    echo "Error: Cannot read Xray config or SSL certificate. Try running as root (sudo vlessLink)." >&2
+    exit 1
+fi
+
+DOMAIN=$(openssl x509 -in "$CERT" -noout -text | grep -oP 'DNS:\K[^,\s]+' | head -n1 || true)
+if [[ -z "$DOMAIN" ]]; then
+    echo "Error: Could not extract domain name from $CERT." >&2
+    exit 1
+fi
+
+BASE_NAME="$DOMAIN"
+if [[ -r "$PROFILE_FILE" ]]; then
+    SAVED_NAME=$(tr -d '\r\n' < "$PROFILE_FILE")
+    [[ -n "$SAVED_NAME" ]] && BASE_NAME="$SAVED_NAME"
+fi
+
+python3 - "$CONFIG" "$DOMAIN" "$BASE_NAME" << 'PY'
+import json, sys, urllib.parse, subprocess, shutil
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    cfg = json.load(f)
+domain = sys.argv[2]
+base_name = sys.argv[3]
+
+vless_in = next((ib for ib in cfg.get("inbounds", []) if ib.get("protocol") == "vless"), None)
+if not vless_in:
+    sys.exit("Error: VLESS inbound not found in config.json")
+
+clients = vless_in.get("settings", {}).get("clients", [])
+if not clients:
+    sys.exit("Error: No clients found in VLESS inbound")
+
+for i, c in enumerate(clients, 1):
+    uuid = c["id"]
+    name = base_name if len(clients) == 1 else f"{base_name}-{i}"
+    tag = urllib.parse.quote(name)
+    uri = (
+        f"vless://{uuid}@{domain}:443"
+        f"?type=tcp&encryption=none&flow=xtls-rprx-vision"
+        f"&security=tls&sni={domain}&alpn=http%2F1.1&fp=chrome#{tag}"
+    )
+    print(f"\n=== Client #{i} (UUID: {uuid}) ===")
+    print(uri)
+    print()
+    if shutil.which("qrencode"):
+        subprocess.run(["qrencode", "-t", "ansiutf8", uri], check=False)
+PY
+EOF
+chmod 0755 /usr/local/bin/vlessLink
+
+# --- Step 12. Print summary & connection info ---
 echo ""
 echo -e "${GREEN}============================================================${NC}"
-echo -e "${GREEN}                  УСТАНОВКА ЗАВЕРШЕНА!                      ${NC}"
+echo -e "${GREEN}                   SETUP COMPLETE!                          ${NC}"
 echo -e "${GREEN}============================================================${NC}"
 echo ""
-echo -e "Домен (HTTPS-сайт): ${CYAN}https://${DOMAIN}${NC}"
-echo -e "UUID клиента:       ${CYAN}${USER_UUID}${NC}"
-echo ""
-echo -e "${YELLOW}Ссылка для импорта (v2rayNG / v2rayTun / Nekobox / Hiddify):${NC}"
-echo "$VLESS_URI"
-echo ""
-echo -e "${YELLOW}QR-код для телефона:${NC}"
-qrencode -t ansiutf8 "$VLESS_URI"
-echo ""
-echo -e "${CYAN}Проверка статуса сервисов:${NC}"
-echo "  systemctl status xray fallback-site --no-pager"
+echo -e "HTTPS site: ${CYAN}https://${DOMAIN}${NC}"
+echo -e "Check status: ${CYAN}systemctl status xray fallback-site --no-pager${NC}"
+echo -e "Show link/QR again anytime: ${CYAN}vlessLink${NC}"
+
+vlessLink
