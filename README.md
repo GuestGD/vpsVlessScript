@@ -2,8 +2,6 @@
 
 An interactive bash script for quickly deploying a personal VPN server powered by **Xray-core (VLESS + TLS + XTLS-Vision)** with an HTTPS fallback website, automatic **Let's Encrypt** SSL renewal, **TCP BBR**, and **UFW** firewall.
 
-*(Note: interactive prompts inside `install-vless.sh` are currently in Russian.)*
-
 ## Requirements
 * A fresh VPS with `root` access (ports `80` and `443` must be free — no running `nginx`, `apache2`, etc.).
 * A domain name with an **A record** pointing to your VPS IP address (if using Cloudflare, keep the proxy / orange cloud **disabled**).
@@ -32,8 +30,14 @@ The script will ask for your domain, optional Let's Encrypt email, UUID (or auto
 * **Fallback static site** bound strictly to `127.0.0.1:8080` (`python3 -m http.server`, `alpn: http/1.1` for lightweight masking). Site root: `/var/www/fallback-site`.
 * **TCP BBR + `fq`** for high throughput on lossy networks.
 * **UFW firewall** allowing only your SSH port, `80/tcp`, and `443/tcp`.
+* **`vlessLink`** helper command to display your connection link and QR code anytime.
 
 ## Useful Commands
+
+Show your `vless://` link and QR code again:
+```bash
+vlessLink
+```
 
 Check service status:
 ```bash
